@@ -15,6 +15,8 @@
     <color name="almostWhite">#F7F9FA</color>
     <color name="colorLime">#45B649</color>
     <color name="colorLime2">#4CA771</color>
+    <color name="colorLime2_10">#1A4CA771</color>
+    <color name="colorLime2_20">#334CA771</color>
     <color name="colorLimeDark">#2E7D32</color>
     <color name="dynamicKycHints">#E8F5E9</color>
     <color name="colorError">#D32F2F</color>
@@ -22,4 +24,3 @@
     <color name="chip_selected_bg">#E8F5E9</color>
     <color name="chip_selected_stroke">#45B649</color>
 </resources>
-
