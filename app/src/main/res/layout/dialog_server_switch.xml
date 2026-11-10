@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/switch_server"
+        android:textAppearance="@style/TextAppearance.Bold.700"
+        android:textColor="@color/black"
+        android:textSize="18sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="Choose which In-App Survey Engine backend server to connect with."
+        android:textColor="@color/colorGray"
+        android:textSize="13sp" />
+
+    <RadioGroup
+        android:id="@+id/rgServer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp">
+
+        <RadioButton
+            android:id="@+id/rbSpring"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Spring Boot (http://10.0.2.2:8080/api/)"
+            android:textColor="@color/black"
+            android:textSize="14sp" />
+
+        <RadioButton
+            android:id="@+id/rbNest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NestJS (http://10.0.2.2:3000/api/)"
+            android:textColor="@color/black"
+            android:textSize="14sp" />
+
+        <RadioButton
+            android:id="@+id/rbCustom"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Custom Host / Physical Device LAN"
+            android:textColor="@color/black"
+            android:textSize="14sp" />
+    </RadioGroup>
+
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/cvCustomUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:visibility="gone"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="0dp"
+        app:strokeColor="@color/light_gray"
+        app:strokeWidth="1dp">
+
+        <EditText
+            android:id="@+id/etCustomUrl"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:hint="http://192.168.1.100:8080/api/"
+            android:inputType="textUri"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:textColor="@color/black"
+            android:textSize="14sp" />
+    </com.google.android.material.card.MaterialCardView>
+
+</LinearLayout>
