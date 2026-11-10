@@ -12,3 +12,4 @@
     app:chipCornerRadius="16dp"
     app:chipStrokeColor="@color/colorLime"
     app:chipStrokeWidth="1dp" />
+

@@ -41,3 +41,4 @@ data class SubmitResponseResult(
     @SerializedName("responseId")
     val responseId: String? = null
 ) : Serializable
+

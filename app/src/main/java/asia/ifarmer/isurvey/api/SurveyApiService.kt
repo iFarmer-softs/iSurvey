@@ -37,3 +37,4 @@ interface SurveyApiService {
         @Part images: List<MultipartBody.Part>
     ): Response<SubmitResponseResult>
 }
+

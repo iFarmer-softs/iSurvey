@@ -3,3 +3,4 @@
     @com.google.gson.annotations.SerializedName <fields>;
 }
 -keep class asia.ifarmer.isurvey.model.** { *; }
+

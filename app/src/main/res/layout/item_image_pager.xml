@@ -20,3 +20,4 @@
         android:backgroundTint="@color/colorError"
         android:contentDescription="@string/remove" />
 </FrameLayout>
+

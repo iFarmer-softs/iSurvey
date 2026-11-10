@@ -60,3 +60,4 @@ class ImagePreviewPagerAdapter(
         return POSITION_NONE
     }
 }
+
