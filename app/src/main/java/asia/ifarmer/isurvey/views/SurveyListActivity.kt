@@ -35,6 +35,9 @@ class SurveyListActivity : AppCompatActivity() {
 
     private fun setupToolbar() {
         updateBackendBadge()
+        binding.btnRefresh.setOnClickListener {
+            loadSurveys()
+        }
         binding.btnSwitchServer.setOnClickListener {
             showServerSwitchDialog()
         }

@@ -40,10 +40,20 @@
                     android:textStyle="bold" />
 
                 <ImageButton
+                    android:id="@+id/btnRefresh"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Refresh"
+                    android:src="@android:drawable/ic_popup_sync"
+                    app:tint="@color/white" />
+
+                <ImageButton
                     android:id="@+id/btnSwitchServer"
                     android:layout_width="40dp"
                     android:layout_height="40dp"
-                    android:layout_marginStart="8dp"
+                    android:layout_marginStart="4dp"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/switch_server"
                     android:src="@android:drawable/ic_menu_preferences"
