@@ -140,11 +140,19 @@ class Parser(mainData: String) {
         val list = mutableListOf<GroupJumpDto>()
         val jumps = joMain.optJSONArray(KEY_GROUPS_TO_JUMP) ?: return list
         for (i in 0 until jumps.length()) {
-            val item = jumps.getJSONObject(i)
+            val item = jumps.optJSONObject(i) ?: continue
+            val rawId = when {
+                item.has("group_id") -> item.optString("group_id")
+                item.has("target_group_id") -> item.optString("target_group_id")
+                item.has("target_group") -> item.optString("target_group")
+                else -> ""
+            }
+            val id = rawId.trim().toIntOrNull() ?: continue
+            val title = item.optString("group_title", "").ifEmpty { "Group $id" }
             list.add(
                 GroupJumpDto(
-                    targetGroupId = item.getInt("target_group_id"),
-                    groupTitle = item.getString("group_title")
+                    targetGroupId = id,
+                    groupTitle = title
                 )
             )
         }

@@ -24,7 +24,7 @@ data class SurveyHeaderDto(
 ) : Serializable
 
 data class GroupJumpDto(
-    @SerializedName("target_group_id")
+    @SerializedName(value = "target_group_id", alternate = ["group_id", "target_group"])
     val targetGroupId: Int,
 
     @SerializedName("group_title")

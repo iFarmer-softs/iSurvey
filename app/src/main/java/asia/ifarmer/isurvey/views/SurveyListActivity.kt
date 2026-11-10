@@ -120,11 +120,11 @@ class SurveyListActivity : AppCompatActivity() {
             .setView(dialogBinding.root)
             .setPositiveButton("Apply") { _, _ ->
                 val newUrl = when (dialogBinding.rgServer.checkedRadioButtonId) {
-                    R.id.rbSpring -> "http://10.0.2.2:8080/api/"
+                    R.id.rbSpring -> "http://192.168.68.101:8080/api/"
                     R.id.rbNest -> "http://10.0.2.2:3000/api/"
                     else -> {
                         val custom = dialogBinding.etCustomUrl.text.toString().trim()
-                        if (custom.isNotEmpty()) custom else "http://10.0.2.2:8080/api/"
+                        if (custom.isNotEmpty()) custom else "http://192.168.68.101:8080/api/"
                     }
                 }
                 SurveyApplication.setBaseUrl(newUrl)

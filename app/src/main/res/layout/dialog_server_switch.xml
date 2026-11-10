@@ -32,7 +32,7 @@
             android:id="@+id/rbSpring"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Spring Boot (http://10.0.2.2:8080/api/)"
+            android:text="Spring Boot (http://192.168.68.101:8080/api/)"
             android:textColor="@color/black"
             android:textSize="14sp" />
 

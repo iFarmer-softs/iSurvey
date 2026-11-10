@@ -14,6 +14,8 @@ android {
         versionName "1.0.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.101:8080/api/\""
+        buildConfigField "String", "BACKEND_TYPE", "\"Spring Boot\""
     }
 
     buildFeatures {
@@ -31,7 +33,7 @@ android {
         spring {
             dimension 'backend'
             applicationIdSuffix ".spring"
-            buildConfigField "String", "DEFAULT_BASE_URL", "\"http://10.0.2.2:8080/api/\""
+            buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.101:8080/api/\""
             buildConfigField "String", "BACKEND_TYPE", "\"Spring Boot\""
         }
         nest {
