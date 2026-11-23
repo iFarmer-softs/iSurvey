@@ -2,6 +2,7 @@ package asia.ifarmer.isurvey.engine
 
 import android.util.SparseArray
 import asia.ifarmer.isurvey.model.GroupJumpDto
+import asia.ifarmer.isurvey.utils.Constants
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -86,12 +87,14 @@ class Parser(mainData: String) {
     }
 
     fun getOptions(index: Int): String {
-        val options = getQuestionObj(index).optString(KEY_OPTIONS, "").trim()
-        return if (options.endsWith(",")) {
-            options.substring(0, options.length - 1)
-        } else {
-            options
-        }
+        val raw = getQuestionObj(index).opt(KEY_OPTIONS)
+        val list = Constants.parseQuestionOptions(raw)
+        return list.joinToString(", ")
+    }
+
+    fun getOptionsList(index: Int): List<String> {
+        val raw = getQuestionObj(index).opt(KEY_OPTIONS)
+        return Constants.parseQuestionOptions(raw)
     }
 
     fun getMandatory(index: Int): Boolean {
@@ -123,6 +126,9 @@ class Parser(mainData: String) {
                 for (i in 0 until deps.length()) {
                     ids.add(deps.getInt(i))
                 }
+            } else {
+                val single = obj.optInt(KEY_DEPENDS_ON, -1)
+                if (single != -1) ids.add(single)
             }
         }
         return ids
@@ -136,9 +142,31 @@ class Parser(mainData: String) {
         return null
     }
 
+    fun getSubsequentQuestions(index: Int): List<Int> {
+        val ids = mutableListOf<Int>()
+        val obj = getQuestionObj(index)
+        val arr = obj.optJSONArray("subsequent_questions")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                ids.add(arr.optInt(i))
+            }
+        }
+        return ids
+    }
+
+    fun getGroup(index: Int): Int {
+        val obj = getQuestionObj(index)
+        val g = obj.optInt("group", currentGroup)
+        return if (g > 0) g else currentGroup
+    }
+
+    fun isCrossGroupDependency(index: Int): Boolean {
+        return getQuestionObj(index).optBoolean("cross_group_dependency", false)
+    }
+
     fun getGroupsToJump(): List<GroupJumpDto> {
         val list = mutableListOf<GroupJumpDto>()
-        val jumps = joMain.optJSONArray(KEY_GROUPS_TO_JUMP) ?: return list
+        val jumps = joMain.optJSONArray(KEY_GROUPS_TO_JUMP) ?: joMain.optJSONArray("groups") ?: return list
         for (i in 0 until jumps.length()) {
             val item = jumps.optJSONObject(i) ?: continue
             val rawId = when {
@@ -148,11 +176,53 @@ class Parser(mainData: String) {
                 else -> ""
             }
             val id = rawId.trim().toIntOrNull() ?: continue
-            val title = item.optString("group_title", "").ifEmpty { "Group $id" }
+            val title = when {
+                item.has("group_title") && item.optString("group_title").isNotBlank() -> item.optString("group_title")
+                item.has("title") && item.optString("title").isNotBlank() -> item.optString("title")
+                item.has("name") && item.optString("name").isNotBlank() -> item.optString("name")
+                else -> "Group $id"
+            }
+            val srcQId = when {
+                item.has("source_question_id") && !item.isNull("source_question_id") -> item.optInt("source_question_id")
+                item.has("sourceQuestionId") && !item.isNull("sourceQuestionId") -> item.optInt("sourceQuestionId")
+                else -> null
+            }
+            val trigVal = when {
+                item.has("trigger_value") && !item.isNull("trigger_value") -> item.optString("trigger_value")
+                item.has("triggerValue") && !item.isNull("triggerValue") -> item.optString("triggerValue")
+                else -> null
+            }
+            val trigType = when {
+                item.has("trigger_type") && !item.isNull("trigger_type") -> item.optString("trigger_type")
+                item.has("triggerType") && !item.isNull("triggerType") -> item.optString("triggerType")
+                else -> null
+            }
+            val srcHandle = when {
+                item.has("source_handle") && !item.isNull("source_handle") -> item.optString("source_handle")
+                item.has("sourceHandle") && !item.isNull("sourceHandle") -> item.optString("sourceHandle")
+                else -> null
+            }
+            val srcGroup = when {
+                item.has("source_group") && !item.isNull("source_group") -> item.optInt("source_group")
+                item.has("sourceGroup") && !item.isNull("sourceGroup") -> item.optInt("sourceGroup")
+                else -> null
+            }
+            val targetQId = when {
+                item.has("target_question_id") && !item.isNull("target_question_id") -> item.optInt("target_question_id")
+                item.has("targetQuestionId") && !item.isNull("targetQuestionId") -> item.optInt("targetQuestionId")
+                else -> null
+            }
+
             list.add(
                 GroupJumpDto(
                     targetGroupId = id,
-                    groupTitle = title
+                    groupTitle = title,
+                    sourceQuestionId = srcQId,
+                    triggerValue = trigVal,
+                    triggerType = trigType,
+                    sourceHandle = srcHandle,
+                    sourceGroup = srcGroup,
+                    targetQuestionId = targetQId
                 )
             )
         }

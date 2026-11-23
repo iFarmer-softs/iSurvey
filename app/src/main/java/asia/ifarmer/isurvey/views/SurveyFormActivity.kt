@@ -25,6 +25,7 @@ import asia.ifarmer.isurvey.R
 import asia.ifarmer.isurvey.api.ApiClient
 import asia.ifarmer.isurvey.databinding.*
 import asia.ifarmer.isurvey.engine.Parser
+import asia.ifarmer.isurvey.engine.RuleEvaluator
 import asia.ifarmer.isurvey.engine.ValidationInformar
 import asia.ifarmer.isurvey.model.GroupJumpDto
 import asia.ifarmer.isurvey.utils.Constants
@@ -148,7 +149,7 @@ class SurveyFormActivity : AppCompatActivity() {
     private fun loadGroup(groupNum: Int) {
         currentGroup = groupNum
         binding.llHolder.removeAllViews()
-        answers.clear()
+        // Retain answers across groups so cross-group dependencies and back navigation retain state
         isMandatory.clear()
         answerType.clear()
         questionsBn.clear()
@@ -179,11 +180,7 @@ class SurveyFormActivity : AppCompatActivity() {
 
                     binding.tvGroupProgress.text = "Group $currentGroup of $totalGroups"
                     binding.btNext.isEnabled = true
-                    binding.btNext.text = if (p.isNextGroupAvailable || p.getGroupsToJump().isNotEmpty()) {
-                        getString(R.string.next)
-                    } else {
-                        getString(R.string.submit)
-                    }
+                    updateNextButtonState()
 
                     if (p.instruction.isNotBlank()) {
                         binding.cvHintHolder.visibility = View.VISIBLE
@@ -232,17 +229,61 @@ class SurveyFormActivity : AppCompatActivity() {
                 } else {
                     selectedJumpTargetGroup = null
                 }
+                updateNextButtonState()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {
                 selectedJumpTargetGroup = null
+                updateNextButtonState()
             }
+        }
+    }
+
+    private fun determineNextGroup(): Int? {
+        if (selectedJumpTargetGroup != null && selectedJumpTargetGroup != currentGroup) {
+            return selectedJumpTargetGroup
+        }
+
+        val p = parser ?: return null
+        val jumps = p.getGroupsToJump()
+        var activeJumpGroup: Int? = null
+        var fallbackGroupJump: Int? = null
+
+        for (jump in jumps) {
+            val targetG = jump.targetGroupId
+            if (targetG == currentGroup) continue
+
+            val srcQId = jump.sourceQuestionId
+            if (srcQId != null) {
+                val rawAns = answers[srcQId.toString()] ?: ""
+                if (RuleEvaluator.evaluateJumpTrigger(jump, rawAns)) {
+                    activeJumpGroup = targetG
+                    break
+                }
+            } else if (fallbackGroupJump == null) {
+                fallbackGroupJump = targetG
+            }
+        }
+
+        return activeJumpGroup ?: fallbackGroupJump
+    }
+
+    private fun updateNextButtonState() {
+        val p = parser ?: return
+        val targetJump = determineNextGroup()
+        val hasNext = (targetJump != null && targetJump > 0) || (p.isNextGroupAvailable && currentGroup < totalGroups)
+        binding.btNext.text = if (hasNext) {
+            getString(R.string.next)
+        } else {
+            getString(R.string.submit)
         }
     }
 
     private fun renderQuestions(p: Parser) {
         for (i in 0 until p.dataLength) {
             val qId = p.getQuestionId(i).toString()
-            answers[qId] = ""
+            if (!answers.containsKey(qId)) {
+                answers[qId] = p.getValue(i) ?: ""
+            }
             isMandatory[qId] = p.getMandatory(i)
             answerType[qId] = p.getAnswerType(i)
             questionsBn[qId] = p.getQuestionBn(i)
@@ -265,6 +306,7 @@ class SurveyFormActivity : AppCompatActivity() {
         }
 
         checkDependentQuestion(-1)
+        updateNextButtonState()
     }
 
     private fun prepareValidationMap(p: Parser, index: Int, view: View) {
@@ -279,7 +321,12 @@ class SurveyFormActivity : AppCompatActivity() {
                 validation = validation,
                 view = view,
                 answers = answers,
-                isMandatory = isMandatory
+                isMandatory = isMandatory,
+                originalMandatory = p.getMandatory(index),
+                dependsOn = deps,
+                onClearAnswer = { clearedKey ->
+                    clearedKey.toIntOrNull()?.let { checkDependentQuestion(it) }
+                }
             )
             for (depId in deps) {
                 val list = validationInformarHashMap.getOrPut(depId) { ArrayList() }
@@ -298,6 +345,7 @@ class SurveyFormActivity : AppCompatActivity() {
         } else {
             validationInformarHashMap[triggerQuestionId]?.forEach { it.showOrHideView() }
         }
+        updateNextButtonState()
     }
 
     private fun addInput(p: Parser, index: Int) {
@@ -326,7 +374,8 @@ class SurveyFormActivity : AppCompatActivity() {
             }
         })
 
-        p.getValue(index)?.let {
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let {
             b.etValue.setText(it)
             answers[qId] = it
         } ?: run {
@@ -365,7 +414,8 @@ class SurveyFormActivity : AppCompatActivity() {
             }
         })
 
-        p.getValue(index)?.let {
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let {
             b.etValue.setText(it)
             answers[qId] = it
         } ?: run {
@@ -412,9 +462,12 @@ class SurveyFormActivity : AppCompatActivity() {
             }
         })
 
-        p.getValue(index)?.let {
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let {
             b.etValue.setText(it)
             answers[qId] = it.replace(",", "")
+        } ?: run {
+            b.etValue.hint = p.getPlaceHolder(index)
         }
 
         if (p.getDependsOn(index).isNotEmpty()) {
@@ -466,7 +519,8 @@ class SurveyFormActivity : AppCompatActivity() {
             }
         })
 
-        p.getValue(index)?.let {
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let {
             val clean = if (it.startsWith("0")) it.substring(1) else it
             b.etValue.setText(clean)
             answers[qId] = it
@@ -492,14 +546,15 @@ class SurveyFormActivity : AppCompatActivity() {
         }
 
         val options = mutableListOf(getString(R.string.please_select_an_options))
-        options.addAll(Constants.getAnswerList(p.getOptions(index)))
+        options.addAll(p.getOptionsList(index))
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, options)
         b.spDropdown.adapter = adapter
 
         prepareValidationMap(p, index, b.root)
 
-        p.getValue(index)?.let { savedVal ->
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let { savedVal ->
             val idx = options.indexOf(savedVal)
             if (idx >= 0) {
                 b.spDropdown.setSelection(idx)
@@ -540,8 +595,10 @@ class SurveyFormActivity : AppCompatActivity() {
             b.tvHint.text = it
         }
 
-        val options = Constants.getAnswerList(p.getOptions(index))
+        val options = p.getOptionsList(index)
         prepareValidationMap(p, index, b.root)
+
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
 
         for (opt in options) {
             val chip = RowChipBinding.inflate(layoutInflater, b.cg, false).root
@@ -555,11 +612,9 @@ class SurveyFormActivity : AppCompatActivity() {
                 }
             }
 
-            p.getValue(index)?.let { saved ->
-                if (saved.trim() == opt) {
-                    chip.isChecked = true
-                    answers[qId] = opt
-                }
+            if (existingVal?.trim() == opt) {
+                chip.isChecked = true
+                answers[qId] = opt
             }
 
             b.cg.addView(chip)
@@ -580,8 +635,10 @@ class SurveyFormActivity : AppCompatActivity() {
         b.cg.isEnabled = p.isEnabled(index)
         b.tvName.text = formatQuestionTitle(p.getQuestionBn(index), p.getMandatory(index))
 
-        val options = Constants.getAnswerList(p.getOptions(index))
+        val options = p.getOptionsList(index)
         prepareValidationMap(p, index, b.root)
+
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
 
         for (opt in options) {
             val chip = RowChipBinding.inflate(layoutInflater, b.cg, false).root
@@ -594,11 +651,9 @@ class SurveyFormActivity : AppCompatActivity() {
                 }
             }
 
-            p.getValue(index)?.let { saved ->
-                if (saved.trim() == opt) {
-                    chip.isChecked = true
-                    answers[qId] = opt
-                }
+            if (existingVal?.trim() == opt) {
+                chip.isChecked = true
+                answers[qId] = opt
             }
 
             b.cg.addView(chip)
@@ -626,10 +681,11 @@ class SurveyFormActivity : AppCompatActivity() {
             b.tvHint.text = it
         }
 
-        val options = Constants.getAnswerList(p.getOptions(index))
+        val options = p.getOptionsList(index)
         prepareValidationMap(p, index, b.root)
 
-        val savedList = Constants.getAnswerList(p.getValue(index))
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        val savedList = Constants.getAnswerList(existingVal)
 
         for (opt in options) {
             val chip = RowChipBinding.inflate(layoutInflater, b.cg, false).root
@@ -679,7 +735,8 @@ class SurveyFormActivity : AppCompatActivity() {
 
         prepareValidationMap(p, index, b.root)
 
-        p.getValue(index)?.let {
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let {
             b.etDate.setText(it)
             answers[qId] = it
         }
@@ -738,7 +795,8 @@ class SurveyFormActivity : AppCompatActivity() {
             launchCamera()
         }
 
-        p.getValue(index)?.let { savedUrls ->
+        val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
+        existingVal?.let { savedUrls ->
             val list = savedUrls.split(",").filter { it.isNotBlank() }
             paths.addAll(list)
             answers[qId] = paths.joinToString(",")
@@ -939,7 +997,7 @@ class SurveyFormActivity : AppCompatActivity() {
     private fun advanceToNextGroup() {
         groupHistory.addLast(currentGroup)
 
-        val targetJump = selectedJumpTargetGroup
+        val targetJump = determineNextGroup()
         if (targetJump != null && targetJump > 0) {
             loadGroup(targetJump)
             return

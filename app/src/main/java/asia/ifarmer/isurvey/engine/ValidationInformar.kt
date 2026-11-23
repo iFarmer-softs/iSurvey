@@ -4,77 +4,89 @@ import android.view.View
 import android.widget.EditText
 import android.widget.Spinner
 import asia.ifarmer.isurvey.R
-import asia.ifarmer.isurvey.utils.Constants
 import com.google.android.material.chip.ChipGroup
 import org.json.JSONObject
-import java.util.regex.Pattern
+import java.util.Locale
 
 class ValidationInformar(
     private val validation: JSONObject,
     private val view: View,
     private val answers: MutableMap<String, String>,
     private val isMandatory: MutableMap<String, Boolean>,
+    private val originalMandatory: Boolean = true,
+    private val dependsOn: List<Int> = emptyList(),
     private val onClearAnswer: ((questionKey: String) -> Unit)? = null
 ) {
-    private val digitPattern = Pattern.compile("^[0-9]+$")
 
     fun showOrHideView() {
-        val showOrNot = mutableListOf<Boolean>()
-        val keys = validation.keys()
+        val questionKey = view.tag?.toString() ?: return
 
-        while (keys.hasNext()) {
-            val key = keys.next()
-            if (answers.containsKey(key)) {
-                val config = validation.optJSONObject(key) ?: continue
-                val type = config.optString("validation_type", "")
-                var currentAnswer = answers[key] ?: ""
+        val logicalOperator = validation.optString("logical_operator", "ALL").uppercase(Locale.ROOT)
+        val isAny = logicalOperator == "ANY"
 
-                when (type) {
-                    "match" -> {
-                        val matches = config.optJSONObject("validation")
-                        if (matches != null) {
-                            val validationKeys = matches.keys()
-                            var matchFound = false
-                            val answerList = Constants.getAnswerList(currentAnswer)
-                            while (validationKeys.hasNext()) {
-                                val vKey = validationKeys.next()
-                                if (answerList.contains(vKey) && matches.optBoolean(vKey, false)) {
-                                    matchFound = true
-                                    break
-                                }
-                            }
-                            showOrNot.add(matchFound)
-                        } else {
-                            showOrNot.add(false)
-                        }
-                    }
-                    "greater", "less" -> {
-                        val threshold = config.optLong("validation", 0L)
-                        val matcher = digitPattern.matcher(currentAnswer.trim())
-                        if (matcher.matches()) {
-                            val valLong = currentAnswer.trim().toLongOrNull() ?: 0L
-                            val passes = if (type == "greater") valLong > threshold else valLong < threshold
-                            showOrNot.add(passes)
-                        } else {
-                            showOrNot.add(false)
-                        }
-                    }
+        // Collect all parent keys
+        val parentKeys = mutableListOf<String>()
+        if (dependsOn.isNotEmpty()) {
+            for (dep in dependsOn) {
+                parentKeys.add(dep.toString())
+            }
+        } else {
+            val keys = validation.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (k != "logical_operator") {
+                    parentKeys.add(k)
                 }
             }
         }
 
-        val questionKey = view.tag?.toString() ?: return
+        val shouldShow: Boolean
 
-        // If there are no failed conditions, show view and restore mandatory flag
-        if (!showOrNot.contains(false)) {
-            view.visibility = View.VISIBLE
-            isMandatory[questionKey] = true
+        if (parentKeys.isEmpty()) {
+            shouldShow = true
+        } else if (isAny && parentKeys.size > 1) {
+            var hasAnyAnswered = false
+            var anySatisfied = false
+
+            for (pKey in parentKeys) {
+                val ans = answers[pKey]
+                if (!ans.isNullOrBlank()) {
+                    hasAnyAnswered = true
+                    val rule = validation.opt(pKey)
+                    if (rule == null || RuleEvaluator.evaluateRule(rule, ans)) {
+                        anySatisfied = true
+                        break
+                    }
+                }
+            }
+            shouldShow = hasAnyAnswered && anySatisfied
         } else {
-            // Condition not met: hide view, mark not mandatory, clear answers
+            // ALL must be satisfied
+            var allPassed = true
+            for (pKey in parentKeys) {
+                val ans = answers[pKey]
+                if (ans.isNullOrBlank()) {
+                    allPassed = false
+                    break
+                }
+                val rule = validation.opt(pKey)
+                if (rule != null && !RuleEvaluator.evaluateRule(rule, ans)) {
+                    allPassed = false
+                    break
+                }
+            }
+            shouldShow = allPassed
+        }
+
+        if (shouldShow) {
+            view.visibility = View.VISIBLE
+            isMandatory[questionKey] = originalMandatory
+        } else {
+            val wasVisible = view.visibility == View.VISIBLE
             view.visibility = View.GONE
             isMandatory[questionKey] = false
+            val hadAnswer = !answers[questionKey].isNullOrEmpty()
             answers[questionKey] = ""
-            onClearAnswer?.invoke(questionKey)
 
             val et: EditText? = view.findViewById(R.id.etValue)
             et?.setText("")
@@ -87,6 +99,10 @@ class ValidationInformar(
 
             val sp: Spinner? = view.findViewById(R.id.spDropdown)
             sp?.setSelection(0)
+
+            if (wasVisible || hadAnswer) {
+                onClearAnswer?.invoke(questionKey)
+            }
         }
     }
 }

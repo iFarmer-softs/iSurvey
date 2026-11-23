@@ -8,6 +8,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import asia.ifarmer.isurvey.BuildConfig
 import asia.ifarmer.isurvey.R
 import asia.ifarmer.isurvey.SurveyApplication
 import asia.ifarmer.isurvey.api.ApiClient
@@ -123,7 +124,7 @@ class SurveyListActivity : AppCompatActivity() {
             .setView(dialogBinding.root)
             .setPositiveButton("Apply") { _, _ ->
                 val newUrl = when (dialogBinding.rgServer.checkedRadioButtonId) {
-                    R.id.rbSpring -> "http://192.168.68.101:8080/api/"
+                    R.id.rbSpring -> BuildConfig.DEFAULT_BASE_URL
                     R.id.rbNest -> "http://10.0.2.2:3000/api/"
                     else -> {
                         val custom = dialogBinding.etCustomUrl.text.toString().trim()
@@ -148,7 +149,7 @@ class SurveyListActivity : AppCompatActivity() {
         dialogBinding.etRespondentId.setText(defaultRespondent)
         dialogBinding.etSurveyorId.setText(defaultSurveyor)
 
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.DialogTheme)
             .setView(dialogBinding.root)
             .setPositiveButton("Start") { _, _ ->
                 val respondentId = dialogBinding.etRespondentId.text.toString().trim()
