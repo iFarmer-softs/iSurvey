@@ -1,8 +1,11 @@
 package asia.ifarmer.isurvey.engine
 
 import asia.ifarmer.isurvey.model.GroupJumpDto
-import org.json.JSONArray
-import org.json.JSONObject
+import com.google.gson.JsonArray
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import java.util.Locale
 
 object RuleEvaluator {
@@ -71,8 +74,8 @@ object RuleEvaluator {
         val trimmedParent = parentAnswer.trim()
         val lowerParent = trimmedParent.lowercase(Locale.ROOT)
 
-        // If ruleConfig is raw string or number
-        if (ruleConfig is String || ruleConfig is Number) {
+        // If ruleConfig is raw String or Number (not a JSON object)
+        if (ruleConfig is Number || (ruleConfig is String && !ruleConfig.trim().startsWith("{") && !ruleConfig.trim().startsWith("["))) {
             val s = ruleConfig.toString().trim()
             if (s.isEmpty()) return true
             if (s.startsWith(">=")) {
@@ -103,59 +106,85 @@ object RuleEvaluator {
             return lowerParent == lowerS || lowerParent.contains(lowerS)
         }
 
-        val jsonConfig = when (ruleConfig) {
-            is JSONObject -> ruleConfig
-            is Map<*, *> -> JSONObject(ruleConfig)
-            else -> return true
+        // Parse ruleConfig as JsonElement using Gson
+        val jsonElement: JsonElement = try {
+            when (ruleConfig) {
+                is JsonElement -> ruleConfig
+                else -> JsonParser.parseString(ruleConfig.toString())
+            }
+        } catch (e: Exception) {
+            return true
         }
 
-        val vType = jsonConfig.optString("validation_type", "match").lowercase(Locale.ROOT)
+        if (!jsonElement.isJsonObject) {
+            if (jsonElement.isJsonPrimitive) {
+                val s = jsonElement.asString.trim()
+                return lowerParent == s.lowercase(Locale.ROOT) || lowerParent.contains(s.lowercase(Locale.ROOT))
+            }
+            return true
+        }
+
+        val jsonConfig = jsonElement.asJsonObject
+        val vType = if (jsonConfig.has("validation_type")) jsonConfig.get("validation_type").asString.lowercase(Locale.ROOT) else "match"
 
         when (vType) {
             "greater" -> {
                 val num = trimmedParent.toDoubleOrNull()
-                val threshold = jsonConfig.optDouble("validation", Double.NaN)
-                return num != null && !threshold.isNaN() && num > threshold
+                val threshold = try { jsonConfig.get("validation")?.asString?.toDoubleOrNull() } catch (e: Exception) { null }
+                return num != null && threshold != null && num > threshold
             }
             "less" -> {
                 val num = trimmedParent.toDoubleOrNull()
-                val threshold = jsonConfig.optDouble("validation", Double.NaN)
-                return num != null && !threshold.isNaN() && num < threshold
+                val threshold = try { jsonConfig.get("validation")?.asString?.toDoubleOrNull() } catch (e: Exception) { null }
+                return num != null && threshold != null && num < threshold
             }
             "greater_or_equal" -> {
                 val num = trimmedParent.toDoubleOrNull()
-                val threshold = jsonConfig.optDouble("validation", Double.NaN)
-                return num != null && !threshold.isNaN() && num >= threshold
+                val threshold = try { jsonConfig.get("validation")?.asString?.toDoubleOrNull() } catch (e: Exception) { null }
+                return num != null && threshold != null && num >= threshold
             }
             "less_or_equal" -> {
                 val num = trimmedParent.toDoubleOrNull()
-                val threshold = jsonConfig.optDouble("validation", Double.NaN)
-                return num != null && !threshold.isNaN() && num <= threshold
+                val threshold = try { jsonConfig.get("validation")?.asString?.toDoubleOrNull() } catch (e: Exception) { null }
+                return num != null && threshold != null && num <= threshold
             }
             "not_match" -> {
-                val targetObj = jsonConfig.opt("validation")
-                val trig = targetObj?.toString()?.trim()?.lowercase(Locale.ROOT) ?: ""
+                val targetObj = jsonConfig.get("validation")
+                val trig = try { targetObj?.asString?.trim()?.lowercase(Locale.ROOT) ?: "" } catch (e: Exception) { "" }
                 return lowerParent != trig && !lowerParent.contains(trig)
             }
             "contains" -> {
-                val targetObj = jsonConfig.opt("validation")
-                val trig = targetObj?.toString()?.trim()?.lowercase(Locale.ROOT) ?: ""
+                val targetObj = jsonConfig.get("validation")
+                val trig = try { targetObj?.asString?.trim()?.lowercase(Locale.ROOT) ?: "" } catch (e: Exception) { "" }
                 return lowerParent.contains(trig)
             }
             else -> { // match
-                if (!jsonConfig.has("validation") || jsonConfig.isNull("validation")) return true
-                val targetVal = jsonConfig.opt("validation")
+                val targetVal = if (jsonConfig.has("validation") && !jsonConfig.get("validation").isJsonNull) {
+                    jsonConfig.get("validation")
+                } else {
+                    jsonConfig
+                }
 
-                if (targetVal is JSONObject) {
+                if (targetVal.isJsonObject) {
+                    val obj = targetVal.asJsonObject
                     val falsyKeys = mutableListOf<String>()
                     val truthyKeys = mutableListOf<String>()
-                    val keys = targetVal.keys()
-                    while (keys.hasNext()) {
-                        val k = keys.next()
-                        if (targetVal.optBoolean(k, false)) {
-                            truthyKeys.add(k.trim())
+                    val metaKeys = setOf("validation_type", "is_same_group", "group", "logical_operator", "active", "enabled")
+
+                    for (entry in obj.entrySet()) {
+                        val key = entry.key
+                        if (metaKeys.contains(key.lowercase(Locale.ROOT))) continue
+                        val v = entry.value
+                        val isTrue = when {
+                            v.isJsonPrimitive && v.asJsonPrimitive.isBoolean -> v.asBoolean
+                            v.isJsonPrimitive && v.asJsonPrimitive.isNumber -> v.asInt != 0
+                            v.isJsonPrimitive && v.asJsonPrimitive.isString -> v.asString.equals("true", ignoreCase = true)
+                            else -> false
+                        }
+                        if (isTrue) {
+                            truthyKeys.add(key.trim())
                         } else {
-                            falsyKeys.add(k.trim())
+                            falsyKeys.add(key.trim())
                         }
                     }
 
@@ -167,8 +196,12 @@ object RuleEvaluator {
                         }
                     }
 
-                    if (truthyKeys.isEmpty()) return false
-                    if (truthyKeys.contains("")) return true // Wildcard non-empty match
+                    // If only metadata was present and targetVal was jsonConfig, it's unconditional
+                    if (truthyKeys.isEmpty() && falsyKeys.isEmpty()) {
+                        return true
+                    }
+
+                    if (truthyKeys.contains("")) return true // Wildcard match
 
                     val matchesTruthy = truthyKeys.any { k ->
                         val lowerKey = k.lowercase(Locale.ROOT)
@@ -185,15 +218,16 @@ object RuleEvaluator {
                     return !matchesFalsy
                 }
 
-                if (targetVal is JSONArray) {
-                    for (i in 0 until targetVal.length()) {
-                        val s = targetVal.optString(i, "").trim().lowercase(Locale.ROOT)
+                if (targetVal.isJsonArray) {
+                    val arr = targetVal.asJsonArray
+                    for (i in 0 until arr.size()) {
+                        val s = arr.get(i).asString.trim().lowercase(Locale.ROOT)
                         if (lowerParent == s || lowerParent.contains(s)) return true
                     }
                     return false
                 }
 
-                val strTarget = targetVal?.toString()?.trim() ?: ""
+                val strTarget = if (targetVal.isJsonPrimitive) targetVal.asString.trim() else ""
                 if (strTarget.isEmpty()) return true
 
                 if (strTarget.startsWith(">=")) {

@@ -169,7 +169,7 @@ class SurveyFormActivity : AppCompatActivity() {
                 val resp = ApiClient.getService().getSurveyGroup(
                     surveyId = surveyId,
                     groupNumber = currentGroup,
-                    respondentId = if (isModifyMode) respondentId else null
+                    respondentId = if (respondentId.isNotBlank()) respondentId else null
                 )
 
                 if (resp.isSuccessful && resp.body() != null) {
@@ -177,6 +177,18 @@ class SurveyFormActivity : AppCompatActivity() {
                     val p = Parser(rawJson)
                     parser = p
                     totalGroups = p.totalGroups
+
+                    // Check if all questions in this group are restricted/hidden
+                    val allowedIds = getEligibleQuestionIdsForCurrentGroup(p)
+                    if (allowedIds != null && allowedIds.isEmpty()) {
+                        val next = determineNextGroup()
+                        if (next != null && next > 0) {
+                            loadGroup(next)
+                        } else {
+                            showCompletionDialog()
+                        }
+                        return@launch
+                    }
 
                     binding.tvGroupProgress.text = "Group $currentGroup of $totalGroups"
                     binding.btNext.isEnabled = true
@@ -238,6 +250,132 @@ class SurveyFormActivity : AppCompatActivity() {
         }
     }
 
+    private fun getEligibleQuestionIdsForCurrentGroup(p: Parser): Set<Int>? {
+        val allJumps = p.getGroupsToJump()
+        val jumpsToG = allJumps.filter { it.targetGroupId == currentGroup }
+        val specificTargetJumps = jumpsToG.filter { it.targetQuestionId != null }
+
+        val currentGroupQIds = (0 until p.dataLength).map { p.getQuestionId(it) }.toSet()
+        val subsequentMap = (0 until p.dataLength).associate { p.getQuestionId(it) to p.getSubsequentQuestions(it) }
+
+        val specificTargetQIds = mutableSetOf<Int>()
+        for (j in specificTargetJumps) {
+            val tId = j.targetQuestionId ?: continue
+            specificTargetQIds.add(tId)
+            subsequentMap[tId]?.forEach { specificTargetQIds.add(it) }
+        }
+
+        for (i in 0 until p.dataLength) {
+            val qId = p.getQuestionId(i)
+            val deps = p.getDependsOn(i)
+            val validation = p.getValidation(i)
+            if (deps.isNotEmpty()) {
+                val hasCrossGroupParent = deps.any { parentId ->
+                    !currentGroupQIds.contains(parentId) ||
+                    validation?.optJSONObject(parentId.toString())?.optBoolean("is_same_group", true) == false ||
+                    validation?.optJSONObject(parentId.toString())?.optInt("group", currentGroup) != currentGroup
+                }
+                if (hasCrossGroupParent) {
+                    specificTargetQIds.add(qId)
+                    subsequentMap[qId]?.forEach { specificTargetQIds.add(it) }
+                }
+            }
+        }
+
+        if (specificTargetQIds.isEmpty()) {
+            return null
+        }
+
+        val allowed = mutableSetOf<Int>()
+        for (qId in currentGroupQIds) {
+            if (!specificTargetQIds.contains(qId)) {
+                allowed.add(qId)
+            }
+        }
+
+        val lastVisitedGroup = groupHistory.lastOrNull()
+        val satisfiedTargets = mutableSetOf<Int>()
+
+        for (j in specificTargetJumps) {
+            if (j.sourceGroup != null && lastVisitedGroup != null && j.sourceGroup != lastVisitedGroup) {
+                continue
+            }
+            val qId = j.sourceQuestionId
+            val targetQId = j.targetQuestionId ?: continue
+            if (qId != null) {
+                val rawAns = answers[qId.toString()] ?: ""
+                if (RuleEvaluator.evaluateJumpTrigger(j, rawAns)) {
+                    satisfiedTargets.add(targetQId)
+                }
+            } else {
+                satisfiedTargets.add(targetQId)
+            }
+        }
+
+        for (i in 0 until p.dataLength) {
+            val qId = p.getQuestionId(i)
+            if (specificTargetQIds.contains(qId) && !satisfiedTargets.contains(qId)) {
+                val deps = p.getDependsOn(i)
+                val validation = p.getValidation(i)
+                if (deps.isNotEmpty()) {
+                    val isAllSatisfied = deps.all { parentId ->
+                        val parentAns = answers[parentId.toString()] ?: ""
+                        if (parentAns.isBlank()) return@all false
+                        val rule = validation?.opt(parentId.toString())
+                        if (rule != null && !RuleEvaluator.evaluateRule(rule, parentAns)) return@all false
+                        true
+                    }
+                    if (isAllSatisfied) {
+                        satisfiedTargets.add(qId)
+                    }
+                }
+            }
+        }
+
+        for (tId in satisfiedTargets) {
+            allowed.add(tId)
+            subsequentMap[tId]?.forEach { allowed.add(it) }
+        }
+
+        return allowed
+    }
+
+    private fun isGroupEligible(gNum: Int, currentTargetJump: Int?): Boolean {
+        if (currentTargetJump == gNum) return true
+
+        val p = parser ?: return true
+        val allJumps = p.getGroupsToJump()
+        val lastVisitedGroup = groupHistory.lastOrNull()
+
+        val groupLevelJumpsToG = allJumps.filter { j ->
+            j.targetGroupId == gNum &&
+            j.targetQuestionId == null &&
+            (!j.triggerValue.isNullOrBlank() || j.sourceQuestionId != null || !j.triggerType.isNullOrBlank() || !j.sourceHandle.isNullOrBlank())
+        }
+
+        if (groupLevelJumpsToG.isNotEmpty()) {
+            val relevantJumps = groupLevelJumpsToG.filter { j ->
+                j.sourceGroup == null || lastVisitedGroup == null || j.sourceGroup == lastVisitedGroup
+            }
+            if (relevantJumps.isNotEmpty()) {
+                val isSatisfied = relevantJumps.any { j ->
+                    val qId = j.sourceQuestionId
+                    if (qId != null) {
+                        val rawAns = answers[qId.toString()] ?: ""
+                        RuleEvaluator.evaluateJumpTrigger(j, rawAns)
+                    } else {
+                        false
+                    }
+                }
+                if (!isSatisfied) {
+                    return false
+                }
+            }
+        }
+
+        return true
+    }
+
     private fun determineNextGroup(): Int? {
         if (selectedJumpTargetGroup != null && selectedJumpTargetGroup != currentGroup) {
             return selectedJumpTargetGroup
@@ -248,29 +386,53 @@ class SurveyFormActivity : AppCompatActivity() {
         var activeJumpGroup: Int? = null
         var fallbackGroupJump: Int? = null
 
-        for (jump in jumps) {
-            val targetG = jump.targetGroupId
-            if (targetG == currentGroup) continue
+        val allowedIds = getEligibleQuestionIdsForCurrentGroup(p)
 
-            val srcQId = jump.sourceQuestionId
-            if (srcQId != null) {
-                val rawAns = answers[srcQId.toString()] ?: ""
-                if (RuleEvaluator.evaluateJumpTrigger(jump, rawAns)) {
-                    activeJumpGroup = targetG
-                    break
+        for (i in 0 until p.dataLength) {
+            val qId = p.getQuestionId(i)
+            if (allowedIds != null && !allowedIds.contains(qId)) continue
+            val view = rowViews[qId.toString()]
+            if (view != null && view.visibility != View.VISIBLE) continue
+
+            val rawAns = answers[qId.toString()] ?: ""
+            if (rawAns.isBlank()) continue
+
+            for (jump in jumps) {
+                val targetG = jump.targetGroupId
+                if (targetG == currentGroup) continue
+
+                val srcQId = jump.sourceQuestionId
+                if (srcQId != null && srcQId == qId) {
+                    if (RuleEvaluator.evaluateJumpTrigger(jump, rawAns)) {
+                        activeJumpGroup = targetG
+                        break
+                    }
+                } else if (srcQId == null && (jump.sourceGroup == null || jump.sourceGroup == currentGroup)) {
+                    if (fallbackGroupJump == null) {
+                        fallbackGroupJump = targetG
+                    }
                 }
-            } else if (fallbackGroupJump == null) {
-                fallbackGroupJump = targetG
+            }
+            if (activeJumpGroup != null) break
+        }
+
+        val resolvedTarget = activeJumpGroup ?: fallbackGroupJump
+        if (resolvedTarget != null && isGroupEligible(resolvedTarget, resolvedTarget)) {
+            return resolvedTarget
+        }
+
+        for (candidate in (currentGroup + 1)..totalGroups) {
+            if (isGroupEligible(candidate, resolvedTarget)) {
+                return candidate
             }
         }
 
-        return activeJumpGroup ?: fallbackGroupJump
+        return null
     }
 
     private fun updateNextButtonState() {
-        val p = parser ?: return
         val targetJump = determineNextGroup()
-        val hasNext = (targetJump != null && targetJump > 0) || (p.isNextGroupAvailable && currentGroup < totalGroups)
+        val hasNext = targetJump != null && targetJump > 0
         binding.btNext.text = if (hasNext) {
             getString(R.string.next)
         } else {
@@ -279,12 +441,16 @@ class SurveyFormActivity : AppCompatActivity() {
     }
 
     private fun renderQuestions(p: Parser) {
+        val allowedIds = getEligibleQuestionIdsForCurrentGroup(p)
+
         for (i in 0 until p.dataLength) {
-            val qId = p.getQuestionId(i).toString()
+            val qIdInt = p.getQuestionId(i)
+            val qId = qIdInt.toString()
             if (!answers.containsKey(qId)) {
                 answers[qId] = p.getValue(i) ?: ""
             }
-            isMandatory[qId] = p.getMandatory(i)
+            val isAllowed = allowedIds == null || allowedIds.contains(qIdInt)
+            isMandatory[qId] = if (isAllowed) p.getMandatory(i) else false
             answerType[qId] = p.getAnswerType(i)
             questionsBn[qId] = p.getQuestionBn(i)
             questionsEn[qId] = p.getQuestion(i)
@@ -302,6 +468,10 @@ class SurveyFormActivity : AppCompatActivity() {
                 "image" -> addImage(p, i)
                 "read_only" -> addReadOnlyView(p, i)
                 else -> addInput(p, i)
+            }
+
+            if (!isAllowed) {
+                rowViews[qId]?.visibility = View.GONE
             }
         }
 
@@ -338,6 +508,9 @@ class SurveyFormActivity : AppCompatActivity() {
     }
 
     private fun checkDependentQuestion(triggerQuestionId: Int) {
+        val p = parser
+        val allowedIds = p?.let { getEligibleQuestionIdsForCurrentGroup(it) }
+
         if (triggerQuestionId == -1) {
             for (depId in validationInformarHashMap.keys) {
                 validationInformarHashMap[depId]?.forEach { it.showOrHideView() }
@@ -345,6 +518,20 @@ class SurveyFormActivity : AppCompatActivity() {
         } else {
             validationInformarHashMap[triggerQuestionId]?.forEach { it.showOrHideView() }
         }
+
+        if (allowedIds != null) {
+            val parserObj = p ?: return
+            for (i in 0 until parserObj.dataLength) {
+                val qIdInt = parserObj.getQuestionId(i)
+                if (!allowedIds.contains(qIdInt)) {
+                    val qIdStr = qIdInt.toString()
+                    rowViews[qIdStr]?.visibility = View.GONE
+                    isMandatory[qIdStr] = false
+                    answers[qIdStr] = ""
+                }
+            }
+        }
+
         updateNextButtonState()
     }
 
@@ -997,15 +1184,9 @@ class SurveyFormActivity : AppCompatActivity() {
     private fun advanceToNextGroup() {
         groupHistory.addLast(currentGroup)
 
-        val targetJump = determineNextGroup()
-        if (targetJump != null && targetJump > 0) {
-            loadGroup(targetJump)
-            return
-        }
-
-        val p = parser
-        if (p != null && p.isNextGroupAvailable && currentGroup < totalGroups) {
-            loadGroup(currentGroup + 1)
+        val targetGroup = determineNextGroup()
+        if (targetGroup != null && targetGroup > 0) {
+            loadGroup(targetGroup)
         } else {
             showCompletionDialog()
         }
