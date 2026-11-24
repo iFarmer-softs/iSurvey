@@ -13,6 +13,7 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.CompoundButton
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -89,6 +90,7 @@ class SurveyFormActivity : AppCompatActivity() {
     private var currentCameraOutputFile: File? = null
 
     private var selectedJumpTargetGroup: Int? = null
+    private var isSettingUpSpinner = false
 
     private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val qId = currentImageCaptureQuestionId ?: return@registerForActivityResult
@@ -142,7 +144,9 @@ class SurveyFormActivity : AppCompatActivity() {
 
         binding.ibGroupJumpCancel.setOnClickListener {
             selectedJumpTargetGroup = null
-            binding.cvGroupJumpHolder.visibility = View.GONE
+            binding.spGroupJump.setSelection(0)
+            binding.ibGroupJumpCancel.visibility = View.GONE
+            updateNextButtonState()
         }
     }
 
@@ -180,14 +184,12 @@ class SurveyFormActivity : AppCompatActivity() {
 
                     // Check if all questions in this group are restricted/hidden
                     val allowedIds = getEligibleQuestionIdsForCurrentGroup(p)
-                    if (allowedIds != null && allowedIds.isEmpty()) {
+                    if (allowedIds != null && allowedIds.isEmpty() && p.dataLength > 0) {
                         val next = determineNextGroup()
-                        if (next != null && next > 0) {
+                        if (next != null && next > 0 && next != currentGroup) {
                             loadGroup(next)
-                        } else {
-                            showCompletionDialog()
+                            return@launch
                         }
-                        return@launch
                     }
 
                     binding.tvGroupProgress.text = "Group $currentGroup of $totalGroups"
@@ -221,30 +223,78 @@ class SurveyFormActivity : AppCompatActivity() {
     }
 
     private fun setupGroupJumpSpinner(jumps: List<GroupJumpDto>) {
-        if (jumps.isEmpty()) {
+        val validJumps = jumps
+            .filter { it.targetGroupId != currentGroup && it.targetGroupId > 0 }
+            .distinctBy { it.targetGroupId }
+            .sortedBy { it.targetGroupId }
+
+        if (validJumps.isEmpty()) {
             binding.cvGroupJumpHolder.visibility = View.GONE
             return
         }
 
         binding.cvGroupJumpHolder.visibility = View.VISIBLE
-        val titles = mutableListOf("Jump to group...")
-        titles.addAll(jumps.map { "${it.targetGroupId}: ${it.groupTitle}" })
+        binding.ibGroupJumpCancel.visibility = if (selectedJumpTargetGroup != null) View.VISIBLE else View.GONE
 
+        val titles = mutableListOf("Jump to group...")
+        titles.addAll(validJumps.map {
+            val titleStr = it.groupTitle.trim()
+            if (titleStr.startsWith("${it.targetGroupId}:") || titleStr.startsWith("${it.targetGroupId} -") || titleStr.startsWith("Group ${it.targetGroupId}")) {
+                titleStr
+            } else {
+                "${it.targetGroupId}: $titleStr"
+            }
+        })
+
+        isSettingUpSpinner = true
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, titles)
         binding.spGroupJump.adapter = adapter
-        binding.spGroupJump.setSelection(0)
+
+        val currentSelectedIndex = if (selectedJumpTargetGroup != null) {
+            val idx = validJumps.indexOfFirst { it.targetGroupId == selectedJumpTargetGroup }
+            if (idx >= 0) idx + 1 else 0
+        } else {
+            0
+        }
+        binding.spGroupJump.setSelection(currentSelectedIndex)
+        isSettingUpSpinner = false
 
         binding.spGroupJump.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isSettingUpSpinner) return
                 if (position > 0) {
-                    selectedJumpTargetGroup = jumps[position - 1].targetGroupId
+                    val targetGroup = validJumps[position - 1].targetGroupId
+                    val targetTitle = validJumps[position - 1].groupTitle
+                    selectedJumpTargetGroup = targetGroup
+                    binding.ibGroupJumpCancel.visibility = View.VISIBLE
+                    updateNextButtonState()
+
+                    AlertDialog.Builder(this@SurveyFormActivity)
+                        .setTitle("Jump to Group $targetGroup")
+                        .setMessage("Do you want to jump to $targetTitle?")
+                        .setPositiveButton("Jump") { _, _ ->
+                            groupHistory.addLast(currentGroup)
+                            loadGroup(targetGroup)
+                        }
+                        .setNegativeButton("Cancel") { _, _ ->
+                            isSettingUpSpinner = true
+                            binding.spGroupJump.setSelection(0)
+                            isSettingUpSpinner = false
+                            selectedJumpTargetGroup = null
+                            binding.ibGroupJumpCancel.visibility = View.GONE
+                            updateNextButtonState()
+                        }
+                        .show()
                 } else {
                     selectedJumpTargetGroup = null
+                    binding.ibGroupJumpCancel.visibility = View.GONE
+                    updateNextButtonState()
                 }
-                updateNextButtonState()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {
+                if (isSettingUpSpinner) return
                 selectedJumpTargetGroup = null
+                binding.ibGroupJumpCancel.visibility = View.GONE
                 updateNextButtonState()
             }
         }
@@ -270,7 +320,7 @@ class SurveyFormActivity : AppCompatActivity() {
             val deps = p.getDependsOn(i)
             val validation = p.getValidation(i)
             if (deps.isNotEmpty()) {
-                val hasCrossGroupParent = deps.any { parentId ->
+                val hasCrossGroupParent = p.isCrossGroupDependency(i) || deps.any { parentId ->
                     !currentGroupQIds.contains(parentId) ||
                     validation?.optJSONObject(parentId.toString())?.optBoolean("is_same_group", true) == false ||
                     validation?.optJSONObject(parentId.toString())?.optInt("group", currentGroup) != currentGroup
@@ -318,14 +368,25 @@ class SurveyFormActivity : AppCompatActivity() {
                 val deps = p.getDependsOn(i)
                 val validation = p.getValidation(i)
                 if (deps.isNotEmpty()) {
-                    val isAllSatisfied = deps.all { parentId ->
-                        val parentAns = answers[parentId.toString()] ?: ""
-                        if (parentAns.isBlank()) return@all false
-                        val rule = validation?.opt(parentId.toString())
-                        if (rule != null && !RuleEvaluator.evaluateRule(rule, parentAns)) return@all false
-                        true
+                    val logicalOperator = validation?.optString("logical_operator", "ALL")?.uppercase(Locale.ROOT) ?: "ALL"
+                    val isAny = logicalOperator == "ANY"
+
+                    val isSatisfied = if (isAny && deps.size > 1) {
+                        deps.any { parentId ->
+                            val parentAns = answers[parentId.toString()] ?: ""
+                            if (parentAns.isBlank()) return@any false
+                            val rule = validation?.opt(parentId.toString()) ?: if (validation?.has("validation_type") == true || validation?.has("validation") == true) validation else null
+                            rule == null || RuleEvaluator.evaluateRule(rule, parentAns)
+                        }
+                    } else {
+                        deps.all { parentId ->
+                            val parentAns = answers[parentId.toString()] ?: ""
+                            if (parentAns.isBlank()) return@all false
+                            val rule = validation?.opt(parentId.toString()) ?: if (validation?.has("validation_type") == true || validation?.has("validation") == true) validation else null
+                            rule == null || RuleEvaluator.evaluateRule(rule, parentAns)
+                        }
                     }
-                    if (isAllSatisfied) {
+                    if (isSatisfied) {
                         satisfiedTargets.add(qId)
                     }
                 }
@@ -345,7 +406,6 @@ class SurveyFormActivity : AppCompatActivity() {
 
         val p = parser ?: return true
         val allJumps = p.getGroupsToJump()
-        val lastVisitedGroup = groupHistory.lastOrNull()
 
         val groupLevelJumpsToG = allJumps.filter { j ->
             j.targetGroupId == gNum &&
@@ -355,7 +415,7 @@ class SurveyFormActivity : AppCompatActivity() {
 
         if (groupLevelJumpsToG.isNotEmpty()) {
             val relevantJumps = groupLevelJumpsToG.filter { j ->
-                j.sourceGroup == null || lastVisitedGroup == null || j.sourceGroup == lastVisitedGroup
+                j.sourceGroup == null || j.sourceGroup == currentGroup
             }
             if (relevantJumps.isNotEmpty()) {
                 val isSatisfied = relevantJumps.any { j ->
@@ -388,6 +448,7 @@ class SurveyFormActivity : AppCompatActivity() {
 
         val allowedIds = getEligibleQuestionIdsForCurrentGroup(p)
 
+        // 1. Evaluate conditional question jumps
         for (i in 0 until p.dataLength) {
             val qId = p.getQuestionId(i)
             if (allowedIds != null && !allowedIds.contains(qId)) continue
@@ -407,13 +468,21 @@ class SurveyFormActivity : AppCompatActivity() {
                         activeJumpGroup = targetG
                         break
                     }
-                } else if (srcQId == null && (jump.sourceGroup == null || jump.sourceGroup == currentGroup)) {
-                    if (fallbackGroupJump == null) {
-                        fallbackGroupJump = targetG
-                    }
                 }
             }
             if (activeJumpGroup != null) break
+        }
+
+        // 2. Evaluate unconditional group jump explicitly from currentGroup
+        if (activeJumpGroup == null) {
+            for (jump in jumps) {
+                val targetG = jump.targetGroupId
+                if (targetG == currentGroup) continue
+                if (jump.sourceQuestionId == null && jump.sourceGroup == currentGroup) {
+                    fallbackGroupJump = targetG
+                    break
+                }
+            }
         }
 
         val resolvedTarget = activeJumpGroup ?: fallbackGroupJump
@@ -421,6 +490,7 @@ class SurveyFormActivity : AppCompatActivity() {
             return resolvedTarget
         }
 
+        // 3. Fallback to sequential eligible group
         for (candidate in (currentGroup + 1)..totalGroups) {
             if (isGroupEligible(candidate, resolvedTarget)) {
                 return candidate
@@ -455,16 +525,16 @@ class SurveyFormActivity : AppCompatActivity() {
             questionsBn[qId] = p.getQuestionBn(i)
             questionsEn[qId] = p.getQuestion(i)
 
-            when (p.getAnswerType(i)) {
+            when (p.getAnswerType(i).lowercase(Locale.ROOT)) {
                 "string" -> addInput(p, i)
                 "text" -> addBigEditText(p, i)
                 "integer", "float", "number_input" -> addInputNumber(p, i)
-                "phone" -> addPhoneNumber(p, i)
+                "phone", "phone_number" -> addPhoneNumber(p, i)
                 "dropdown" -> addDropdown(p, i)
                 "select_one", "radio" -> addRadio(p, i)
                 "single_radio" -> addSingleRadio(p, i)
                 "select_multiple" -> addCheckBox(p, i)
-                "calendar" -> addDate(p, i)
+                "calendar", "date" -> addDate(p, i)
                 "image" -> addImage(p, i)
                 "read_only" -> addReadOnlyView(p, i)
                 else -> addInput(p, i)
@@ -486,9 +556,9 @@ class SurveyFormActivity : AppCompatActivity() {
         val deps = p.getDependsOn(index)
         val validation = p.getValidation(index)
 
-        if (deps.isNotEmpty() && validation != null) {
+        if (deps.isNotEmpty()) {
             val vi = ValidationInformar(
-                validation = validation,
+                validation = validation ?: JSONObject(),
                 view = view,
                 answers = answers,
                 isMandatory = isMandatory,
@@ -644,10 +714,26 @@ class SurveyFormActivity : AppCompatActivity() {
                 if (isTextChangeWatching) {
                     val raw = s?.toString()?.replace(",", "")?.trim() ?: ""
                     answers[qId] = raw
+                    if (b.etValue.error != null) {
+                        val err = validateFieldAnswer(p.getAnswerType(index), raw)
+                        if (err == null) b.etValue.error = null
+                    }
                     checkDependentQuestion(p.getQuestionId(index))
                 }
             }
         })
+
+        b.etValue.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val currentAns = answers[qId] ?: ""
+                if (currentAns.isNotEmpty()) {
+                    val err = validateFieldAnswer(p.getAnswerType(index), currentAns)
+                    b.etValue.error = err
+                } else {
+                    b.etValue.error = null
+                }
+            }
+        }
 
         val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
         existingVal?.let {
@@ -679,38 +765,57 @@ class SurveyFormActivity : AppCompatActivity() {
         prepareValidationMap(p, index, b.root)
 
         b.etValue.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (isTextChangeWatching) {
-                    var num = s?.toString() ?: ""
-                    if (num.startsWith("+880")) num = num.substring(4)
-                    if (num.startsWith("880")) num = num.substring(3)
-                    if (num.startsWith("0")) num = num.substring(1)
-                    num = num.replace(Regex("[^0-9]"), "")
-                    if (num.length > 10) num = num.substring(0, 10)
+            private var isFormatting = false
 
-                    if (num != s?.toString()) {
-                        isTextChangeWatching = false
-                        b.etValue.setText(num)
-                        b.etValue.setSelection(num.length)
-                        isTextChangeWatching = true
-                    }
-                }
-            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                if (isTextChangeWatching) {
-                    val num = s?.toString()?.trim() ?: ""
-                    answers[qId] = if (num.isNotEmpty()) "0$num" else ""
-                    checkDependentQuestion(p.getQuestionId(index))
+                if (isFormatting || !isTextChangeWatching) return
+                val raw = s?.toString() ?: ""
+                var num = raw
+                if (num.startsWith("+880")) num = num.substring(4)
+                if (num.startsWith("880")) num = num.substring(3)
+                if (num.startsWith("0")) num = num.substring(1)
+                num = num.replace(Regex("[^0-9]"), "")
+                if (num.length > 10) num = num.substring(0, 10)
+
+                if (num != raw) {
+                    isFormatting = true
+                    s?.replace(0, s.length, num)
+                    isFormatting = false
                 }
+
+                answers[qId] = if (num.isNotEmpty()) "0$num" else ""
+                if (b.etValue.error != null && (num.isEmpty() || Constants.isValidPhoneNumber(answers[qId]))) {
+                    b.etValue.error = null
+                }
+                checkDependentQuestion(p.getQuestionId(index))
             }
         })
 
+        b.etValue.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val currentAns = answers[qId] ?: ""
+                if (currentAns.isNotEmpty() && !Constants.isValidPhoneNumber(currentAns)) {
+                    b.etValue.error = getString(R.string.invalid_phone)
+                } else {
+                    b.etValue.error = null
+                }
+            }
+        }
+
         val existingVal = answers[qId]?.takeIf { it.isNotBlank() } ?: p.getValue(index)
         existingVal?.let {
-            val clean = if (it.startsWith("0")) it.substring(1) else it
+            var clean = it.trim()
+            if (clean.startsWith("+880")) clean = clean.substring(4)
+            if (clean.startsWith("880")) clean = clean.substring(3)
+            if (clean.startsWith("0")) clean = clean.substring(1)
+            isTextChangeWatching = false
             b.etValue.setText(clean)
-            answers[qId] = it
+            isTextChangeWatching = true
+            answers[qId] = if (clean.isNotEmpty()) "0$clean" else ""
+        } ?: run {
+            b.etValue.hint = p.getPlaceHolder(index).ifBlank { "1XXXXXXXXX" }
         }
 
         if (p.getDependsOn(index).isNotEmpty()) {
@@ -1072,17 +1177,70 @@ class SurveyFormActivity : AppCompatActivity() {
         }
     }
 
+    private fun validateFieldAnswer(type: String, answer: String): String? {
+        val cleanAns = answer.trim()
+        if (cleanAns.isEmpty()) return null
+
+        when (type.lowercase(Locale.ROOT)) {
+            "phone", "phone_number" -> {
+                if (!Constants.isValidPhoneNumber(cleanAns)) {
+                    return getString(R.string.invalid_phone)
+                }
+            }
+            "integer" -> {
+                if (!Constants.isValidInteger(cleanAns)) {
+                    return getString(R.string.invalid_integer)
+                }
+            }
+            "float", "number_input" -> {
+                if (!Constants.isValidFloat(cleanAns)) {
+                    return getString(R.string.only_number)
+                }
+            }
+            "calendar", "date" -> {
+                if (!Constants.isValidDate(cleanAns)) {
+                    return getString(R.string.invalid_date)
+                }
+            }
+        }
+        return null
+    }
+
     private fun handleNextOrSubmit() {
-        // Validate all visible mandatory fields
         var firstInvalidView: View? = null
+        var firstErrorMessage: String? = null
 
         for ((qId, view) in rowViews) {
-            if (view.visibility == View.VISIBLE && isMandatory[qId] == true) {
-                val ans = answers[qId]?.trim() ?: ""
-                if (ans.isEmpty()) {
+            if (view.visibility != View.VISIBLE) continue
+
+            val ans = answers[qId]?.trim() ?: ""
+            val mandatory = isMandatory[qId] == true
+            val type = answerType[qId] ?: "string"
+
+            // 1. Mandatory check
+            if (mandatory && ans.isEmpty()) {
+                if (firstInvalidView == null) {
+                    firstInvalidView = view
+                    firstErrorMessage = getString(R.string.mandatory_field_error)
+                }
+                val et: EditText? = view.findViewById(R.id.etValue)
+                et?.error = getString(R.string.mandatory_field_error)
+                YoYo.with(Techniques.Shake)
+                    .duration(700)
+                    .playOn(view)
+                continue
+            }
+
+            // 2. Answer-type validation (applies whenever filled/answered, regardless of mandatory)
+            if (ans.isNotEmpty()) {
+                val validationError = validateFieldAnswer(type, ans)
+                if (validationError != null) {
                     if (firstInvalidView == null) {
                         firstInvalidView = view
+                        firstErrorMessage = validationError
                     }
+                    val et: EditText? = view.findViewById(R.id.etValue)
+                    et?.error = validationError
                     YoYo.with(Techniques.Shake)
                         .duration(700)
                         .playOn(view)
@@ -1091,8 +1249,25 @@ class SurveyFormActivity : AppCompatActivity() {
         }
 
         if (firstInvalidView != null) {
-            Toast.makeText(this, getString(R.string.mandatory_field_error), Toast.LENGTH_SHORT).show()
+            if (selectedJumpTargetGroup != null && selectedJumpTargetGroup != currentGroup) {
+                val targetG = selectedJumpTargetGroup!!
+                AlertDialog.Builder(this)
+                    .setTitle("Unanswered or invalid fields")
+                    .setMessage("Current group has fields that are empty or have invalid values. Do you want to skip and jump to Group $targetG anyway?")
+                    .setPositiveButton("Jump Anyway") { _, _ ->
+                        groupHistory.addLast(currentGroup)
+                        loadGroup(targetG)
+                    }
+                    .setNegativeButton("Cancel") { _, _ ->
+                        binding.sv.smoothScrollTo(0, firstInvalidView.top)
+                    }
+                    .show()
+                return
+            }
+            Toast.makeText(this, firstErrorMessage ?: getString(R.string.mandatory_field_error), Toast.LENGTH_SHORT).show()
             binding.sv.smoothScrollTo(0, firstInvalidView.top)
+            val et: EditText? = firstInvalidView.findViewById(R.id.etValue)
+            et?.requestFocus()
             return
         }
 

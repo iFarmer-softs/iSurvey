@@ -14,7 +14,7 @@ android {
         versionName "1.0.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.100:8080/api/\""
+        buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.101:8080/api/\""
         buildConfigField "String", "BACKEND_TYPE", "\"Spring Boot\""
     }
 
@@ -33,7 +33,7 @@ android {
         spring {
             dimension 'backend'
             applicationIdSuffix ".spring"
-            buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.100:8080/api/\""
+            buildConfigField "String", "DEFAULT_BASE_URL", "\"http://192.168.68.101:8080/api/\""
             buildConfigField "String", "BACKEND_TYPE", "\"Spring Boot\""
         }
         nest {
@@ -90,6 +90,7 @@ dependencies {
 
     // Testing
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 }

@@ -31,10 +31,11 @@ class ValidationInformar(
                 parentKeys.add(dep.toString())
             }
         } else {
+            val metaKeys = setOf("logical_operator", "validation_type", "is_same_group", "group", "validation")
             val keys = validation.keys()
             while (keys.hasNext()) {
                 val k = keys.next()
-                if (k != "logical_operator") {
+                if (!metaKeys.contains(k.lowercase(Locale.ROOT))) {
                     parentKeys.add(k)
                 }
             }
@@ -52,7 +53,7 @@ class ValidationInformar(
                 val ans = answers[pKey]
                 if (!ans.isNullOrBlank()) {
                     hasAnyAnswered = true
-                    val rule = validation.opt(pKey)
+                    val rule = validation.opt(pKey) ?: if (validation.has("validation_type") || validation.has("validation")) validation else null
                     if (rule == null || RuleEvaluator.evaluateRule(rule, ans)) {
                         anySatisfied = true
                         break
@@ -69,7 +70,7 @@ class ValidationInformar(
                     allPassed = false
                     break
                 }
-                val rule = validation.opt(pKey)
+                val rule = validation.opt(pKey) ?: if (validation.has("validation_type") || validation.has("validation")) validation else null
                 if (rule != null && !RuleEvaluator.evaluateRule(rule, ans)) {
                     allPassed = false
                     break

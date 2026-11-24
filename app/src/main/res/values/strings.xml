@@ -12,6 +12,9 @@
     <string name="submit">জমা দিন</string>
     <string name="couldnt_upload_image">ছবি আপলোড করা যায়নি</string>
     <string name="only_number">শুধুমাত্র নম্বর প্রবেশ করান</string>
+    <string name="invalid_phone">সঠিক মোবাইল নম্বর দিন (১১ ডিজিট)</string>
+    <string name="invalid_integer">অনুগ্রহ করে পূর্ণসংখ্যা প্রবেশ করান</string>
+    <string name="invalid_date">সঠিক তারিখ নির্বাচন করুন (YYYY-MM-DD)</string>
     <string name="mandatory_field_error">অনুগ্রহ করে লাল চিহ্নিত প্রয়োজনীয় তথ্য পূরণ করুন</string>
     <string name="survey_completed">জরিপ সফলভাবে সম্পন্ন হয়েছে!</string>
     <string name="switch_server">সার্ভার পরিবর্তন</string>

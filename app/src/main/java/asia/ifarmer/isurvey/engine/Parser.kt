@@ -45,10 +45,18 @@ class Parser(mainData: String) {
         get() = dataArray.length()
 
     val totalGroups: Int
-        get() = joMain.optInt(KEY_TOTAL_GROUP, 1)
+        get() = when {
+            joMain.has(KEY_TOTAL_GROUP) -> joMain.optInt(KEY_TOTAL_GROUP, 1)
+            joMain.has("totalGroups") -> joMain.optInt("totalGroups", 1)
+            else -> 1
+        }
 
     val currentGroup: Int
-        get() = joMain.optInt(KEY_CURRENT_GROUP, 1)
+        get() = when {
+            joMain.has(KEY_CURRENT_GROUP) -> joMain.optInt(KEY_CURRENT_GROUP, 1)
+            joMain.has("currentGroup") -> joMain.optInt("currentGroup", 1)
+            else -> 1
+        }
 
     val instruction: String
         get() = joMain.optString(KEY_INSTRUCTION, "")
@@ -161,23 +169,34 @@ class Parser(mainData: String) {
     }
 
     fun isCrossGroupDependency(index: Int): Boolean {
-        return getQuestionObj(index).optBoolean("cross_group_dependency", false)
+        val obj = getQuestionObj(index)
+        val v = obj.opt("cross_group_dependency")
+        if (v is Boolean) return v
+        if (v is JSONArray) return v.length() > 0
+        return obj.optBoolean("cross_group_dependency", false)
     }
 
     fun getGroupsToJump(): List<GroupJumpDto> {
         val list = mutableListOf<GroupJumpDto>()
-        val jumps = joMain.optJSONArray(KEY_GROUPS_TO_JUMP) ?: joMain.optJSONArray("groups") ?: return list
+        val jumps = joMain.optJSONArray(KEY_GROUPS_TO_JUMP)
+            ?: joMain.optJSONArray("groupsToJump")
+            ?: joMain.optJSONArray("groups")
+            ?: return list
         for (i in 0 until jumps.length()) {
             val item = jumps.optJSONObject(i) ?: continue
             val rawId = when {
                 item.has("group_id") -> item.optString("group_id")
+                item.has("groupId") -> item.optString("groupId")
                 item.has("target_group_id") -> item.optString("target_group_id")
+                item.has("targetGroupId") -> item.optString("targetGroupId")
                 item.has("target_group") -> item.optString("target_group")
+                item.has("targetGroup") -> item.optString("targetGroup")
                 else -> ""
             }
             val id = rawId.trim().toIntOrNull() ?: continue
             val title = when {
                 item.has("group_title") && item.optString("group_title").isNotBlank() -> item.optString("group_title")
+                item.has("groupTitle") && item.optString("groupTitle").isNotBlank() -> item.optString("groupTitle")
                 item.has("title") && item.optString("title").isNotBlank() -> item.optString("title")
                 item.has("name") && item.optString("name").isNotBlank() -> item.optString("name")
                 else -> "Group $id"

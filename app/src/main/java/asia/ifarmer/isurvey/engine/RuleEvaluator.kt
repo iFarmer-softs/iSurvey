@@ -7,8 +7,86 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import java.util.Locale
+import java.util.regex.Pattern
 
 object RuleEvaluator {
+
+    /**
+     * Checks if a phone number or partial phone number matches another.
+     * Supports Bangladeshi mobile formats (+8801XXXXXXXXX, 8801XXXXXXXXX, 01XXXXXXXXX, 1XXXXXXXXX),
+     * space/hyphen formatting, and operator/prefix matching (e.g. 017, +88017).
+     */
+    fun isPhoneMatch(p: String, t: String): Boolean {
+        val pDigits = p.filter { it.isDigit() }
+        val tDigits = t.filter { it.isDigit() }
+        if (pDigits.isEmpty() || tDigits.isEmpty()) return false
+
+        fun extractBdCorePhone(digits: String): String? {
+            if (digits.length >= 10) {
+                val last10 = digits.takeLast(10)
+                if (last10[0] == '1' && last10[1] in '1'..'9') {
+                    return last10
+                }
+            }
+            return null
+        }
+
+        val pCore = extractBdCorePhone(pDigits)
+        val tCore = extractBdCorePhone(tDigits)
+
+        if (pCore != null && tCore != null) {
+            return pCore == tCore
+        }
+
+        fun stripPrefix(digits: String): String {
+            var s = digits
+            if (s.startsWith("00880")) s = s.substring(5)
+            else if (s.startsWith("880")) s = s.substring(3)
+            if (s.startsWith("0")) s = s.substring(1)
+            return s
+        }
+
+        val pClean = stripPrefix(pDigits)
+        val tClean = stripPrefix(tDigits)
+
+        if (pClean.isNotEmpty() && tClean.isNotEmpty()) {
+            if (pClean == tClean || pClean.startsWith(tClean) || tClean.startsWith(pClean)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * General value comparison supporting exact string, substring, wildcard/boolean presence,
+     * and normalized phone number matching.
+     */
+    fun isValueMatch(parentAnswer: String, target: String): Boolean {
+        val trimmedTarget = target.trim()
+        val lowerTarget = trimmedTarget.lowercase(Locale.ROOT)
+        if (lowerTarget.isEmpty() || lowerTarget == "*" ||
+            lowerTarget == "true" || lowerTarget == "any" || lowerTarget == "all" ||
+            lowerTarget == "not_empty" || lowerTarget == "filled" ||
+            lowerTarget == "default-next" ||
+            lowerTarget.contains("cross-group") || lowerTarget.contains("cross_group")
+        ) {
+            return true
+        }
+
+        val trimmedParent = parentAnswer.trim()
+        val lowerParent = trimmedParent.lowercase(Locale.ROOT)
+
+        if (lowerParent == lowerTarget || lowerParent.contains(lowerTarget) || lowerTarget.contains(lowerParent)) {
+            return true
+        }
+
+        if (isPhoneMatch(trimmedParent, trimmedTarget)) {
+            return true
+        }
+
+        return false
+    }
 
     /**
      * Evaluates whether a group jump trigger condition is satisfied by the user's answer.
@@ -18,10 +96,30 @@ object RuleEvaluator {
     fun evaluateJumpTrigger(jump: GroupJumpDto, answer: String?): Boolean {
         if (answer.isNullOrBlank()) return false
         val trimmedAns = answer.trim()
-        val lowerAns = trimmedAns.lowercase(Locale.ROOT)
         val trig = (jump.triggerValue ?: "").trim()
-        val lowerTrig = trig.lowercase(Locale.ROOT)
+        val trigLower = trig.lowercase(Locale.ROOT)
+        val handleLower = (jump.sourceHandle ?: "").lowercase(Locale.ROOT)
+
+        if (trigLower.contains("cross-group") || trigLower.contains("cross_group") || trigLower == "default-next" ||
+            handleLower.contains("cross-group") || handleLower.contains("cross_group") || handleLower == "default-next"
+        ) {
+            return true
+        }
+
         val trigType = (jump.triggerType ?: "match").lowercase(Locale.ROOT)
+
+        val isElseOrNotMatch = trigType == "not_match" || trigType == "else" ||
+                jump.sourceHandle.equals("else", ignoreCase = true) ||
+                trig.equals("else", ignoreCase = true)
+
+        if (isElseOrNotMatch) {
+            if (trig.isBlank() || trig.equals("else", ignoreCase = true)) return true
+            val opts = trig.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (opts.size > 1) {
+                return opts.none { isValueMatch(trimmedAns, it) }
+            }
+            return !isValueMatch(trimmedAns, trig)
+        }
 
         when (trigType) {
             "greater" -> {
@@ -44,32 +142,27 @@ object RuleEvaluator {
                 val threshold = trig.toDoubleOrNull()
                 return num != null && threshold != null && num <= threshold
             }
-            "not_match", "else" -> {
-                if (trig.isBlank() || trig.equals("else", ignoreCase = true)) return true
-                val opts = trig.split(",").map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
-                if (opts.size > 1) {
-                    return opts.none { lowerAns == it || lowerAns.contains(it) }
-                }
-                return lowerAns != lowerTrig && !lowerAns.contains(lowerTrig)
-            }
             else -> { // "match"
                 if (trig.isBlank()) return true
-                val opts = trig.split(",").map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+                val opts = trig.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                 if (opts.isNotEmpty()) {
-                    return opts.any { lowerAns == it || lowerAns.contains(it) || it.contains(lowerAns) }
+                    return opts.any { isValueMatch(trimmedAns, it) }
                 }
-                return lowerAns == lowerTrig || lowerAns.contains(lowerTrig) || lowerTrig.contains(lowerAns)
+                return isValueMatch(trimmedAns, trig)
             }
         }
     }
 
     /**
-     * Robust rule evaluator handling match maps, wildcard, negation/else, numeric, and string comparisons.
+     * Robust rule evaluator handling match maps, wildcard, negation/else, numeric, phone, and string comparisons.
      * Compatible with evaluateRule in in-app-survey-engine's MobilePreviewModal.
      */
     fun evaluateRule(ruleConfig: Any?, parentAnswer: String?): Boolean {
         if (parentAnswer.isNullOrBlank()) return false
         if (ruleConfig == null) return true
+
+        if (ruleConfig is Boolean) return ruleConfig
+        if (ruleConfig is JsonPrimitive && ruleConfig.isBoolean) return ruleConfig.asBoolean
 
         val trimmedParent = parentAnswer.trim()
         val lowerParent = trimmedParent.lowercase(Locale.ROOT)
@@ -77,7 +170,11 @@ object RuleEvaluator {
         // If ruleConfig is raw String or Number (not a JSON object)
         if (ruleConfig is Number || (ruleConfig is String && !ruleConfig.trim().startsWith("{") && !ruleConfig.trim().startsWith("["))) {
             val s = ruleConfig.toString().trim()
-            if (s.isEmpty()) return true
+            val lowerS = s.lowercase(Locale.ROOT)
+            if (lowerS.isEmpty() || lowerS == "*" || lowerS == "true" || lowerS == "any" || lowerS == "all" ||
+                lowerS == "not_empty" || lowerS == "filled" || lowerS == "default-next" ||
+                lowerS.contains("cross-group") || lowerS.contains("cross_group")
+            ) return true
             if (s.startsWith(">=")) {
                 val numVal = trimmedParent.toDoubleOrNull()
                 val threshold = s.substring(2).trim().toDoubleOrNull()
@@ -99,11 +196,11 @@ object RuleEvaluator {
                 return numVal != null && threshold != null && numVal < threshold
             }
             if (s.startsWith("!=") || s.startsWith("NOT ", ignoreCase = true)) {
-                val target = s.replace(Regex("^(?:!=|NOT\\s*)", RegexOption.IGNORE_CASE), "").trim().lowercase(Locale.ROOT)
-                return lowerParent != target && !lowerParent.contains(target)
+                val target = s.replace(Regex("^(?:!=|NOT\\s*)", RegexOption.IGNORE_CASE), "").trim()
+                if (target.isEmpty()) return true
+                return !isValueMatch(trimmedParent, target)
             }
-            val lowerS = s.lowercase(Locale.ROOT)
-            return lowerParent == lowerS || lowerParent.contains(lowerS)
+            return isValueMatch(trimmedParent, s)
         }
 
         // Parse ruleConfig as JsonElement using Gson
@@ -118,8 +215,11 @@ object RuleEvaluator {
 
         if (!jsonElement.isJsonObject) {
             if (jsonElement.isJsonPrimitive) {
+                if (jsonElement.asJsonPrimitive.isBoolean) {
+                    return jsonElement.asBoolean
+                }
                 val s = jsonElement.asString.trim()
-                return lowerParent == s.lowercase(Locale.ROOT) || lowerParent.contains(s.lowercase(Locale.ROOT))
+                return isValueMatch(trimmedParent, s)
             }
             return true
         }
@@ -150,13 +250,15 @@ object RuleEvaluator {
             }
             "not_match" -> {
                 val targetObj = jsonConfig.get("validation")
-                val trig = try { targetObj?.asString?.trim()?.lowercase(Locale.ROOT) ?: "" } catch (e: Exception) { "" }
-                return lowerParent != trig && !lowerParent.contains(trig)
+                val trig = try { targetObj?.asString?.trim() ?: "" } catch (e: Exception) { "" }
+                if (trig.isEmpty()) return true
+                return !isValueMatch(trimmedParent, trig)
             }
             "contains" -> {
                 val targetObj = jsonConfig.get("validation")
-                val trig = try { targetObj?.asString?.trim()?.lowercase(Locale.ROOT) ?: "" } catch (e: Exception) { "" }
-                return lowerParent.contains(trig)
+                val trig = try { targetObj?.asString?.trim() ?: "" } catch (e: Exception) { "" }
+                if (trig.isEmpty()) return true
+                return isValueMatch(trimmedParent, trig)
             }
             else -> { // match
                 val targetVal = if (jsonConfig.has("validation") && !jsonConfig.get("validation").isJsonNull) {
@@ -191,8 +293,7 @@ object RuleEvaluator {
                     // If pure negation/else (e.g. { "Yes": false } without truthy keys)
                     if (truthyKeys.isEmpty() && falsyKeys.isNotEmpty()) {
                         return falsyKeys.none { k ->
-                            val lowerKey = k.lowercase(Locale.ROOT)
-                            lowerParent == lowerKey || lowerParent.contains(lowerKey)
+                            if (k.isEmpty()) false else isValueMatch(trimmedParent, k)
                         }
                     }
 
@@ -201,18 +302,23 @@ object RuleEvaluator {
                         return true
                     }
 
-                    if (truthyKeys.contains("")) return true // Wildcard match
+                    if (truthyKeys.any {
+                        val k = it.lowercase(Locale.ROOT)
+                        k.isEmpty() || k == "*" || k == "true" || k == "any" || k == "all" ||
+                        k == "not_empty" || k == "filled" || k == "default-next" ||
+                        k.contains("cross-group") || k.contains("cross_group")
+                    }) {
+                        return true
+                    }
 
                     val matchesTruthy = truthyKeys.any { k ->
-                        val lowerKey = k.lowercase(Locale.ROOT)
-                        lowerParent == lowerKey || lowerParent.contains(lowerKey) || lowerKey.contains(lowerParent)
+                        isValueMatch(trimmedParent, k)
                     }
 
                     if (!matchesTruthy) return false
 
                     val matchesFalsy = falsyKeys.any { k ->
-                        val lowerKey = k.lowercase(Locale.ROOT)
-                        lowerParent == lowerKey
+                        if (k.isEmpty()) false else isValueMatch(trimmedParent, k)
                     }
 
                     return !matchesFalsy
@@ -221,14 +327,24 @@ object RuleEvaluator {
                 if (targetVal.isJsonArray) {
                     val arr = targetVal.asJsonArray
                     for (i in 0 until arr.size()) {
-                        val s = arr.get(i).asString.trim().lowercase(Locale.ROOT)
-                        if (lowerParent == s || lowerParent.contains(s)) return true
+                        val s = arr.get(i).asString.trim()
+                        if (isValueMatch(trimmedParent, s)) return true
                     }
                     return false
                 }
 
+                if (targetVal.isJsonPrimitive && targetVal.asJsonPrimitive.isBoolean) {
+                    return targetVal.asBoolean
+                }
+
                 val strTarget = if (targetVal.isJsonPrimitive) targetVal.asString.trim() else ""
-                if (strTarget.isEmpty()) return true
+                val lowerStrTarget = strTarget.lowercase(Locale.ROOT)
+                if (lowerStrTarget.isEmpty() || lowerStrTarget == "*" ||
+                    lowerStrTarget == "true" || lowerStrTarget == "any" || lowerStrTarget == "all" ||
+                    lowerStrTarget == "not_empty" || lowerStrTarget == "filled" ||
+                    lowerStrTarget == "default-next" ||
+                    lowerStrTarget.contains("cross-group") || lowerStrTarget.contains("cross_group")
+                ) return true
 
                 if (strTarget.startsWith(">=")) {
                     val numVal = trimmedParent.toDoubleOrNull()
@@ -251,8 +367,7 @@ object RuleEvaluator {
                     return numVal != null && threshold != null && numVal < threshold
                 }
 
-                val lowerTarget = strTarget.lowercase(Locale.ROOT)
-                return lowerParent == lowerTarget || lowerParent.contains(lowerTarget) || lowerTarget.contains(lowerParent)
+                return isValueMatch(trimmedParent, strTarget)
             }
         }
     }

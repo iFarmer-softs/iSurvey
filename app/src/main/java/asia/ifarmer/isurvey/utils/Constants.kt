@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.text.DecimalFormat
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.regex.Pattern
 
 object Constants {
 
@@ -102,6 +103,57 @@ object Constants {
             df.format(amount)
         } catch (e: Exception) {
             number
+        }
+    }
+
+    /**
+     * Validates Bangladeshi phone numbers.
+     * Matches 11-digit numbers (01[1-9]XXXXXXXX), with international prefix (+880, 880, 0088),
+     * or 10-digit number without leading 0 (1[1-9]XXXXXXXX).
+     */
+    fun isValidPhoneNumber(number: String?): Boolean {
+        if (number.isNullOrBlank()) return false
+        val clean = number.trim().replace(" ", "").replace("-", "")
+        val pattern = Pattern.compile("^(?:\\+?880|00880|880)?0?(1[1-9]\\d{8})$")
+        val matcher = pattern.matcher(clean)
+        return matcher.matches()
+    }
+
+    /**
+     * Validates integer numbers (positive or negative, optional commas).
+     */
+    fun isValidInteger(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val clean = value.trim().replace(",", "")
+        return clean.toLongOrNull() != null
+    }
+
+    /**
+     * Validates float/decimal numbers.
+     */
+    fun isValidFloat(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val clean = value.trim().replace(",", "")
+        val d = clean.toDoubleOrNull() ?: return false
+        return !d.isNaN() && !d.isInfinite()
+    }
+
+    /**
+     * Validates date strings in YYYY-MM-DD format with realistic calendar bounds.
+     */
+    fun isValidDate(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val clean = value.trim()
+        val regex = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+        if (!regex.matches(clean)) return false
+        return try {
+            val parts = clean.split("-").map { it.toInt() }
+            val year = parts[0]
+            val month = parts[1]
+            val day = parts[2]
+            year in 1900..2100 && month in 1..12 && day in 1..31
+        } catch (e: Exception) {
+            false
         }
     }
 }
